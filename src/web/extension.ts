@@ -1,6 +1,9 @@
 import * as vscode from "vscode";
-import * as path from "path";
 import { flashWithWebSerial, monitorWithWebserial, eraseflash } from './webserial';
+
+interface FolderQuickPickItem extends vscode.QuickPickItem {
+    uri: vscode.Uri; // Custom property to store the URI
+}
 
 export function activate(context: vscode.ExtensionContext) {
   const disposable = vscode.commands.registerCommand(
@@ -16,17 +19,33 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		const folderNames = workspaceFolders.map(folder => path.basename(folder.uri.fsPath));
-		const selectedFolder = await vscode.window.showQuickPick(folderNames, {
-			placeHolder: 'Select a folder from the workspace',
+		const quickpick = vscode.window.createQuickPick<FolderQuickPickItem>();
+		quickpick.canSelectMany = false;
+		quickpick.items = workspaceFolders.map(folder => ({
+			label: folder.name,
+			description: folder.uri.fsPath,
+			uri: folder.uri,
+		}));
+		quickpick.placeholder = "Select the folder to flash";
+
+		quickpick.onDidChangeSelection(selection => {
+            if (selection[0]) {
+                const selectedFolderUri = selection[0].uri;
+
+                // Call your function here
+                if (selectedFolderUri) {
+                    flashWithWebSerial(selectedFolderUri);
+                }
+                
+                quickpick.hide();
+            }
+        });
+
+		quickpick.onDidHide(() => {
+			quickpick.dispose();
 		});
 
-		if (selectedFolder) {
-			const selectedFolderUri = workspaceFolders.find(folder => path.basename(folder.uri.path) === selectedFolder)?.uri;
-			if (selectedFolderUri) {
-				flashWithWebSerial(selectedFolderUri);
-			}
-		}
+		quickpick.show();
       }
     }
   );
