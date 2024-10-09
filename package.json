@@ -9,7 +9,11 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onCommand:LowCode-web.flash",
+    "onCommand:LowCode-web.monitor",
+    "onCommand:LowCode-web.eraseflash"
+  ],
   "browser": "./dist/web/extension.js",
   "contributes": {
     "commands": [

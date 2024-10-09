@@ -19,6 +19,16 @@ import { uInt8ArrayToString } from "./utils";
 import { SerialTerminal } from "./serialPseudoTerminal";
 import { enc, MD5 } from 'crypto-js';
 
+
+//ToDO
+//1. Management of PORT
+//2. Managing isFlashing and isMonitoring
+
+
+var isFlashing: boolean = false;
+var isMonitoring: boolean = false;
+var PORT: SerialPort | undefined;
+var transport: Transport | undefined;
 export interface PartitionInfo {
   name: string;
   data: string;
@@ -32,15 +42,15 @@ export interface FlashSectionMessage {
   flashFreq: string;
 }
 
-export async function monitorWithWebserial() {
+async function getPort(): Promise<SerialPort | null> {
   const portInfo = (await commands.executeCommand(
     "workbench.experimental.requestSerialPort"
   )) as SerialPortInfo;
   if (!portInfo) {
-    return;
+    return null;
   }
-  const ports = await navigator.serial.getPorts();
-  let port = ports.find((item) => {
+  const portsFound = await navigator.serial.getPorts();
+  let port = portsFound.find((item) => {
     const info = item.getInfo();
     return (
       info.usbVendorId === portInfo.usbVendorId &&
@@ -48,8 +58,17 @@ export async function monitorWithWebserial() {
     );
   });
   if (!port) {
+    return null;
+  }
+  return port;
+}
+
+export async function monitorWithWebserial() {
+  const port = await getPort();
+  if (!port) {
     return;
   }
+  PORT = port;
   const monitorBaudRate = await window.showQuickPick(
     [
       { description: "74880", label: "74880", target: 74880 },
@@ -81,13 +100,17 @@ export async function monitorWithWebserial() {
   window.onDidCloseTerminal(async (t) => {
     if (t.name === "ESP LowCode Web Monitor" && t.exitStatus) {
       await transport.disconnect();
-      port = undefined;
+      PORT = undefined;
     }
   });
   lowCodeTerminal.show();
 }
 
 export async function flashWithWebSerial(workspace: Uri) {
+  if (isFlashing) {
+    window.showInformationMessage("Please wait until previous flashing is finished");
+    return;
+  }
   try {
     window.withProgress(
       {
@@ -101,20 +124,7 @@ export async function flashWithWebSerial(workspace: Uri) {
         }>,
         cancelToken: CancellationToken
       ) => {
-        const portInfo = (await commands.executeCommand(
-          "workbench.experimental.requestSerialPort"
-        )) as SerialPortInfo;
-        if (!portInfo) {
-          return;
-        }
-        const ports = await navigator.serial.getPorts();
-        let port = ports.find((item) => {
-          const info = item.getInfo();
-          return (
-            info.usbVendorId === portInfo.usbVendorId &&
-            info.usbProductId === portInfo.usbProductId
-          );
-        });
+        const port = await getPort();
         if (!port) {
           return;
         }
@@ -191,8 +201,8 @@ export async function flashWithWebSerial(workspace: Uri) {
         if (transport) {
           await transport.disconnect();
         }
-        if (port) {
-          port = undefined;
+        if (PORT) {
+          PORT = undefined;
         }
       }
     );
@@ -250,24 +260,18 @@ async function readFileIntoBuffer(filePath: Uri, name: string, offset: string) {
 }
 
 export async function eraseflash() {
-  const portInfo = (await commands.executeCommand(
-    "workbench.experimental.requestSerialPort"
-  )) as SerialPortInfo;
-  if (!portInfo) {
+  if (isFlashing) {
+    window.showInformationMessage("Waiting for flash to complete...\nTry again later");
     return;
   }
-  const ports = await navigator.serial.getPorts();
-  let port = ports.find((item) => {
-    const info = item.getInfo();
-    return (
-      info.usbVendorId === portInfo.usbVendorId &&
-      info.usbProductId === portInfo.usbProductId
-    );
-  });
+  isFlashing = true;
+  const port = await getPort();
   if (!port) {
+    isFlashing = false;
     return;
   }
   const transport = new Transport(port);
+  await transport.connect();
   const outputChnl = window.createOutputChannel("LowCode Web");
   const clean = () => {
     outputChnl.clear();
@@ -292,4 +296,11 @@ export async function eraseflash() {
 
   const esploader = new ESPLoader(loaderOptions);
   await esploader.eraseFlash();
+  isFlashing = false;
+  if (transport) {
+    transport.disconnect();
+  }
+  if (port) {
+    PORT = undefined;
+  }
 }
