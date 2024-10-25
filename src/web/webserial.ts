@@ -20,26 +20,11 @@ import { SerialTerminal } from "./serialPseudoTerminal";
 import { enc, MD5 } from 'crypto-js';
 
 
-//ToDO
-//1. Management of PORT
-//2. Managing isFlashing and isMonitoring
-
-
 var isFlashing: boolean = false;
-var isMonitoring: boolean = false;
-var PORT: SerialPort | undefined;
-var transport: Transport | undefined;
 export interface PartitionInfo {
   name: string;
   data: string;
   address: number;
-}
-
-export interface FlashSectionMessage {
-  sections: PartitionInfo[];
-  flashSize: string;
-  flashMode: string;
-  flashFreq: string;
 }
 
 async function getPort(): Promise<SerialPort | null> {
@@ -68,7 +53,6 @@ export async function monitorWithWebserial() {
   if (!port) {
     return;
   }
-  PORT = port;
   const monitorBaudRate = await window.showQuickPick(
     [
       { description: "74880", label: "74880", target: 74880 },
@@ -100,52 +84,48 @@ export async function monitorWithWebserial() {
   window.onDidCloseTerminal(async (t) => {
     if (t.name === "ESP LowCode Web Monitor" && t.exitStatus) {
       await transport.disconnect();
-      PORT = undefined;
     }
   });
   lowCodeTerminal.show();
 }
 
-export async function flashWithWebSerial(workspace: Uri) {
+
+export async function flashWithWebSerial(workspaceUri: Uri) {
   if (isFlashing) {
     window.showInformationMessage("Please wait until previous flashing is finished");
     return;
   }
+
+  const outputChnl = window.createOutputChannel("LowCode Web");
+  outputChnl.show();
+  
   try {
-    window.withProgress(
+    // Use the original workspace URI without scheme conversion
+    outputChnl.appendLine(`Working with workspace: ${workspaceUri.toString()}`);
+
+    await window.withProgress(
       {
         cancellable: true,
         location: ProgressLocation.Notification,
         title: "Flashing with WebSerial...",
       },
-      async (
-        progress: Progress<{
-          message: string;
-        }>,
-        cancelToken: CancellationToken
-      ) => {
+      async (progress, cancelToken) => {
         const port = await getPort();
         if (!port) {
           return;
         }
+        
+        isFlashing = true;
+        
+        // Setup transport and terminal
         const transport = new Transport(port);
-        const outputChnl = window.createOutputChannel("LowCode Web");
-        const clean = () => {
-          outputChnl.clear();
-        };
-        const writeLine = (data: string) => {
-          outputChnl.appendLine(data);
-        };
-        const write = (data: string) => {
-          outputChnl.append(data);
-        };
-
         const loaderTerminal: IEspLoaderTerminal = {
-          clean,
-          write,
-          writeLine,
+          clean: () => outputChnl.clear(),
+          write: (data: string) => outputChnl.append(data),
+          writeLine: (data: string) => outputChnl.appendLine(data),
         };
 
+        // Get baud rate
         const flashBaudRate = await window.showQuickPick(
           [
             { description: "115200", label: "115200", target: 115200 },
@@ -155,108 +135,105 @@ export async function flashWithWebSerial(workspace: Uri) {
           ],
           { placeHolder: "Select baud rate" }
         );
+        
         if (!flashBaudRate) {
           return;
         }
+
         const loaderOptions = {
           transport,
           baudrate: flashBaudRate.target,
           terminal: loaderTerminal,
         } as LoaderOptions;
+        
         progress.report({
           message: `ESP LowCode Web Flashing using baud rate ${flashBaudRate.target}`,
         });
-        outputChnl.appendLine(
-          `ESP LowCode Web Flashing with Webserial using baud rate ${flashBaudRate.target}`
-        );
-        outputChnl.show();
+
+        // Initialize ESP loader
         const esploader = new ESPLoader(loaderOptions);
         const chip = await esploader.main();
-        const flashSectionsMessage = await getFlashSectionsForCurrentWorkspace(
-          workspace
-        );
-        const flashOptions: FlashOptions = {
-          fileArray: flashSectionsMessage.sections,
-          flashSize: flashSectionsMessage.flashSize,
-          flashFreq: flashSectionsMessage.flashFreq,
-          flashMode: flashSectionsMessage.flashMode,
-          eraseAll: false,
-          compress: true,
-          reportProgress: (
-            fileIndex: number,
-            written: number,
-            total: number
-          ) => {
-            progress.report({
-              message: `${flashSectionsMessage.sections[fileIndex].name} (${written}/${total})`,
-            });
-          },
-          calculateMD5Hash: (image: string) =>
-            MD5(enc.Latin1.parse(image)).toString(),
-        } as FlashOptions;
-
-        await esploader.writeFlash(flashOptions);
-        progress.report({ message: `ESP LowCode Web Flashing done` });
-        outputChnl.appendLine(`ESP LowCode Web Flashing done`);
-        if (transport) {
-          await transport.disconnect();
+        if (chip) {
+          outputChnl.appendLine(`Found chip: ${chip}`);
         }
-        if (PORT) {
-          PORT = undefined;
+
+        // Access build folder with original URI
+        const buildFolderUri = Uri.joinPath(workspaceUri, 'build');
+        outputChnl.appendLine(`Scanning build folder: ${buildFolderUri.toString()}`);
+        
+        try {
+          // Use workspace API to check build directory
+          const buildDirStat = await workspace.fs.stat(buildFolderUri);
+          
+          if (!(buildDirStat.type & FileType.Directory)) {
+            throw new Error('Build path is not a directory');
+          }
+          
+          // Read directory contents
+          const files = await workspace.fs.readDirectory(buildFolderUri);
+          outputChnl.appendLine(`Found ${files.length} files in build directory`);
+          
+          const binaryFiles = files
+            .filter(([fileName, fileType]) => fileType === FileType.File && fileName.endsWith('.bin'))
+            .map(entry => entry[0]);
+
+          if (binaryFiles.length === 0) {
+            window.showInformationMessage('No binary files found in the build directory.');
+            return;
+          }
+
+          const selectedFile = await window.showQuickPick(binaryFiles, {
+            placeHolder: 'Select a binary file',
+          });
+          
+          if (selectedFile) {
+            const binaryFileUri = Uri.joinPath(buildFolderUri, selectedFile);
+            outputChnl.appendLine(`Selected file: ${binaryFileUri.toString()}`);
+            
+            // Read binary file using workspace fs API
+            const binaryContent = await workspace.fs.readFile(binaryFileUri);
+            outputChnl.appendLine(`Successfully read binary file, size: ${binaryContent.length} bytes`);
+            
+            // Create partition info
+            const partitionInfo: PartitionInfo = {
+              data: uInt8ArrayToString(binaryContent),
+              address: 0x20C000,
+              name: "MainProgram"
+            };
+
+            const flashOptions: FlashOptions = {
+              fileArray: [partitionInfo],
+              flashSize: '4MB',
+              flashFreq: '80m',
+              flashMode: 'dio',
+              eraseAll: false,
+              compress: true,
+              reportProgress: async (fileIndex, written, total) => {
+                progress.report({
+                  message: `${partitionInfo.name} (${written}/${total})`,
+                });
+              },
+              calculateMD5Hash: (image: string) => MD5(enc.Latin1.parse(image)).toString(),
+            };
+
+            await esploader.writeFlash(flashOptions);
+            progress.report({ message: `ESP LowCode Web Flashing done` });
+            outputChnl.appendLine(`ESP LowCode Web Flashing done`);
+          }
+        } catch (error: any) {
+          outputChnl.appendLine(`Error accessing build directory or files: ${error.message}`);
+          throw error;
         }
       }
     );
   } catch (error: any) {
-    const outputChnl = window.createOutputChannel("LowCode Web");
     const errMsg = error && error.message ? error.message : error;
-    outputChnl.appendLine(errMsg);
+    outputChnl.appendLine(`Error: ${errMsg}`);
+    window.showErrorMessage(`Flashing failed: ${errMsg}`);
+  } finally {
+    
+    isFlashing = false;
   }
-}
-
-async function getFlashSectionsForCurrentWorkspace(workspaceFolder: Uri) {
-  const flashInfoFileName = Uri.joinPath(
-    workspaceFolder,
-    "flasher_args.json"
-  );
-  const flasherArgsStat = await workspace.fs.stat(flashInfoFileName);
-  if (flasherArgsStat.type !== FileType.File) {
-    throw new Error(`${flashInfoFileName} does not exists.`);
-  }
-  const flasherArgsContent = await workspace.fs.readFile(flashInfoFileName);
-  if (!flasherArgsContent) {
-    throw new Error("Build before flashing");
-  }
-  let flasherArgsContentStr = uInt8ArrayToString(flasherArgsContent);
-  const flashFileJson = JSON.parse(flasherArgsContentStr);
-  const binPromises: Promise<PartitionInfo>[] = [];
-  Object.keys(flashFileJson["flash_files"]).forEach((offset) => {
-    const fileName = flashFileJson["flash_files"][offset];
-    const filePath = Uri.joinPath(
-      workspaceFolder,
-      "build",
-      flashFileJson["flash_files"][offset]
-    );
-    binPromises.push(readFileIntoBuffer(filePath, fileName, offset));
-  });
-  const binaries = await Promise.all(binPromises);
-  const message: FlashSectionMessage = {
-    sections: binaries,
-    flashFreq: flashFileJson["flash_settings"]["flash_freq"],
-    flashMode: flashFileJson["flash_settings"]["flash_mode"],
-    flashSize: flashFileJson["flash_settings"]["flash_size"],
-  };
-  return message;
-}
-
-async function readFileIntoBuffer(filePath: Uri, name: string, offset: string) {
-  const fileBuffer = await workspace.fs.readFile(filePath);
-  let fileBufferString = uInt8ArrayToString(fileBuffer);
-  const fileBufferResult: PartitionInfo = {
-    data: fileBufferString,
-    name,
-    address: parseInt(offset),
-  };
-  return fileBufferResult;
 }
 
 export async function eraseflash() {
@@ -264,12 +241,11 @@ export async function eraseflash() {
     window.showInformationMessage("Waiting for flash to complete...\nTry again later");
     return;
   }
-  isFlashing = true;
   const port = await getPort();
   if (!port) {
-    isFlashing = false;
     return;
   }
+  isFlashing = true;
   const transport = new Transport(port);
   await transport.connect();
   const outputChnl = window.createOutputChannel("LowCode Web");
@@ -299,8 +275,5 @@ export async function eraseflash() {
   isFlashing = false;
   if (transport) {
     transport.disconnect();
-  }
-  if (port) {
-    PORT = undefined;
   }
 }
