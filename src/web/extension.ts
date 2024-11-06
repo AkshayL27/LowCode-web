@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { flashWithWebSerial, monitorWithWebserial, eraseflash } from './webserial';
+import { flashWithWebSerial, monitorWithWebserial, eraseFlash } from './webserial';
 
 export function activate(context: vscode.ExtensionContext) {
 	const disposable = vscode.commands.registerCommand("LowCode-web.flash", async () => {
@@ -30,7 +30,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(monitorDisposable);
 
   const eraseFlashDisposable = vscode.commands.registerCommand("LowCode-web.eraseflash", async () => {
-	  await eraseflash();
+	  await eraseFlash();
 	}
   );
   context.subscriptions.push(eraseFlashDisposable);

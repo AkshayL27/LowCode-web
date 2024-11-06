@@ -3,7 +3,6 @@ import {
   Event,
   EventEmitter,
   Pseudoterminal,
-  TerminalDimensions,
 } from "vscode";
 import { uInt8ArrayToString } from './utils';
 
@@ -19,9 +18,7 @@ export class SerialTerminal implements Pseudoterminal {
     protected options: SerialOptions
   ) {}
 
-  public async open(
-    _initialDimensions: TerminalDimensions | undefined
-  ): Promise<void> {
+  public async open(): Promise<void> {
     await this.transport.sleep(500);
     await this.reset();
     while (!this.closed) {
